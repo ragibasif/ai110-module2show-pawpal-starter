@@ -6,19 +6,19 @@
 
 The system is built around six classes organized in a clear hierarchy:
 
-- **`Owner`** — holds the pet owner's name and daily availability window (start/end times). Responsible for knowing how many minutes are available in a day.
-- **`Pet`** — holds the pet's profile (name, species, age) and a reference to its Owner. Acts as the context object passed into the scheduler.
-- **`Task`** — the core value object. Holds everything needed to describe a care task: title, duration, priority (high/medium/low), category (walk, feeding, medication, etc.), optional time window constraints (earliest/latest start), and recurrence.
+- **`Owner`** — holds the pet owner's name, daily availability window, and a list of registered pets. Responsible for knowing how many minutes are available in a day and providing cross-pet task access.
+- **`Pet`** — holds the pet's profile (name, species, age) and owns a list of Tasks. Acts as the unit of scheduling — each DailySchedule is built around one Pet.
+- **`Task`** — the core value object. Holds everything needed to describe a care task: title, duration, priority (high/medium/low), category, optional time window constraints, recurrence, completion status, and due date.
 - **`ScheduledTask`** — a Task that has been assigned a concrete start time. Computes its own `end_time` and carries a human-readable `reason` explaining why it was placed in that slot.
-- **`DailySchedule`** — the output of the scheduler. Contains an ordered list of ScheduledTasks, a list of skipped tasks with reasons, and methods to detect conflicts and pretty-print the plan.
-- **`Scheduler`** — the algorithmic engine. Stateless; takes a Pet and a list of Tasks, runs the scheduling algorithm, and returns a DailySchedule. The key methods are `_sort_tasks()` (priority ordering) and `generate_schedule()` (greedy slot assignment).
+- **`DailySchedule`** — the output of the Scheduler. Contains an ordered list of ScheduledTasks, a list of skipped tasks with reasons, and methods to detect conflicts and pretty-print the plan.
+- **`Scheduler`** — the algorithmic engine. Stateless; retrieves pending tasks from a Pet, sorts and places them greedily, and returns a DailySchedule.
 
 Three core user actions the system supports:
 1. **Register a pet** — create an Owner + Pet with availability preferences.
 2. **Add/edit care tasks** — define tasks with duration, priority, category, and optional time constraints.
 3. **Generate today's schedule** — call the Scheduler to produce a time-stamped, prioritized daily plan with explanations.
 
-**UML Class Diagram**
+**UML Class Diagram (Final)**
 
 ```mermaid
 classDiagram
@@ -26,7 +26,12 @@ classDiagram
         +str name
         +time available_start
         +time available_end
+        +list pets
         +available_minutes() int
+        +add_pet(pet) None
+        +get_pet(name) Pet
+        +all_tasks() list
+        +all_pending_tasks() list
     }
 
     class Pet {
@@ -34,6 +39,14 @@ classDiagram
         +str species
         +int age
         +Owner owner
+        +list tasks
+        +add_task(task) None
+        +remove_task(title) bool
+        +pending_tasks() list
+        +completed_tasks() list
+        +complete_task(task, today) Task
+        +filter_tasks(...) list
+        +reset_daily_tasks() None
     }
 
     class Task {
@@ -41,10 +54,15 @@ classDiagram
         +int duration_minutes
         +Priority priority
         +Category category
+        +bool completed
+        +date due_date
         +time earliest_start
         +time latest_start
         +str recurrence
         +str notes
+        +mark_complete() None
+        +reset() None
+        +next_occurrence(from_date) Task
     }
 
     class ScheduledTask {
@@ -65,30 +83,36 @@ classDiagram
     }
 
     class Scheduler {
-        +generate_schedule(pet, tasks, date) DailySchedule
+        +generate_schedule(pet, date) DailySchedule
+        +generate_all_schedules(owner, date) list
         +_sort_tasks(tasks) list
-        +_fits_in_window(task, slot, day) tuple
-        +_build_reason(task, slot) str
+        +_build_reason(task) str
     }
 
-    Pet *-- Owner : owned by
+    Owner o-- Pet : manages
+    Pet *-- Owner : back-ref
+    Pet o-- Task : owns
     ScheduledTask *-- Task : wraps
     DailySchedule *-- Pet : plans for
     DailySchedule o-- ScheduledTask : contains
     Scheduler ..> Pet : uses
-    Scheduler ..> Task : uses
+    Scheduler ..> Owner : uses
     Scheduler ..> DailySchedule : produces
+    Task ..> Task : next_occurrence()
 ```
 
 **b. Design changes**
 
-Two bugs were identified during design review and fixed before implementation:
+Three changes were made after initial design review:
 
 **Change 1 — Task deferral instead of rejection for `earliest_start`**
-The original `generate_schedule()` called `_fits_in_window()` and permanently skipped any task whose `earliest_start` hadn't arrived yet. This was wrong: a task with `earliest_start=18:00` scheduled at 09:00 should be *deferred* to 18:00, not thrown away. The fix advances `current_slot` to the task's `earliest_start` when the scheduler arrives too early, then re-checks whether the task still fits before the end of the day. The `_fits_in_window()` check is now reserved only for the `latest_start` hard deadline.
+The original `generate_schedule()` permanently skipped any task whose `earliest_start` hadn't arrived yet. A task with `earliest_start=18:00` at 09:00 should be *deferred* to 18:00, not dropped. The fix advances `current_slot` to the task's `earliest_start` and re-checks day-end fit.
 
 **Change 2 — Input validation added to `Task.__post_init__`**
-No validation existed on `Task` construction. A `duration_minutes` of 0 or -5 would silently produce broken schedules, and an `earliest_start` after `latest_start` would create an impossible time window. Both are now caught with `ValueError` in `__post_init__`, which runs automatically after the dataclass `__init__` is generated. A third issue — `recurrence` being a free unvalidated string — was noted but left as a known limitation for now.
+`duration_minutes <= 0` and `earliest_start >= latest_start` are now caught with `ValueError` at construction time, preventing silent broken schedules downstream.
+
+**Change 3 — Composition: Pet owns Tasks, Owner owns Pets**
+The initial design passed tasks as an external parameter to `generate_schedule()`. The final design embeds `tasks` in `Pet` and `pets` in `Owner`, so the Scheduler navigates `owner → pets → pending_tasks()` instead of relying on the caller to assemble the right list. This eliminated an entire class of caller-side bugs.
 
 ---
 
@@ -96,17 +120,21 @@ No validation existed on `Task` construction. A `duration_minutes` of 0 or -5 wo
 
 **a. Constraints and priorities**
 
-- What constraints does your scheduler consider (for example: time, priority, preferences)?
-- How did you decide which constraints mattered most?
+The Scheduler considers:
+- **Priority** (high/medium/low) — the primary sort key. High-priority tasks are always placed first.
+- **Category** — within the same priority, `medication` tasks jump to the front. Missing a medication dose has worse consequences than a delayed walk.
+- **Duration** — tiebreaker for same priority + category: shorter tasks go first to maximize the number of tasks that fit in the day.
+- **Time windows** — `earliest_start` triggers slot deferral; `latest_start` is a hard deadline that triggers a skip with a reason.
+- **Owner availability** — tasks that would end after `available_end` are skipped entirely.
+
+The most important constraint is **priority**, because it encodes medical necessity (medication > feeding > enrichment). Time windows come second because some constraints (e.g. "medication must be given between 8–10am") are non-negotiable.
 
 **b. Tradeoffs**
 
 **Greedy single-pass scheduling vs. optimal packing:**
-The Scheduler uses a greedy algorithm: it sorts tasks once by priority, then assigns them in order to the next available slot. This means the first high-priority task "claims" its time, and everything else fills in around it. It does not backtrack or try alternative orderings to fit more tasks in.
+The Scheduler sorts tasks once, then assigns them greedily to the next available slot without backtracking. A 25-minute gap that could fit a skipped 20-minute task is left unused. An optimal scheduler (dynamic programming or backtracking) would maximize total value — but for <20 daily pet tasks, predictability and explainability matter more than optimal packing.
 
-The tradeoff: a greedy scheduler may leave a 25-minute gap that could fit a 20-minute low-priority task, but won't go back and reorder to use it. An optimal scheduler (e.g. using dynamic programming or backtracking) would find the maximum-value packing — but for a daily pet care schedule with <20 tasks, the added complexity is not worth it. Pet owners benefit more from a fast, predictable, explainable schedule than a theoretically optimal one.
-
-A second tradeoff: `conflicts()` is O(n²) — it compares every pair of ScheduledTasks. For a daily schedule this is fine (26ms for 26 tests total), but would not scale to hundreds of tasks without replacing it with a sweep-line algorithm.
+A second tradeoff: `conflicts()` is O(n²) — comparing every ScheduledTask pair. Acceptable for a daily schedule; would need a sweep-line algorithm for hundreds of tasks.
 
 ---
 
@@ -114,13 +142,17 @@ A second tradeoff: `conflicts()` is O(n²) — it compares every pair of Schedul
 
 **a. How you used AI**
 
-- How did you use AI tools during this project (for example: design brainstorming, debugging, refactoring)?
-- What kinds of prompts or questions were most helpful?
+AI was used across all phases of this project:
+- **Design brainstorming** — generating the initial class hierarchy and UML diagram from the scenario description.
+- **Scaffolding** — producing class stubs with correct dataclass syntax, type annotations, and docstrings, which were then filled in incrementally.
+- **Bug identification** — reviewing `pawpal_system.py` to catch the deferral-vs-rejection bug and the missing Task validation before they caused test failures.
+- **Test generation** — drafting pytest fixtures and test functions covering happy paths and edge cases (invalid duration, time window conflicts, recurrence date math).
+
+The most effective prompts were specific and file-anchored: *"Review `pawpal_system.py` — are there missing relationships or logic bottlenecks?"* produced actionable findings, while vague prompts like *"improve my scheduler"* produced generic suggestions.
 
 **b. Judgment and verification**
 
-- Describe one moment where you did not accept an AI suggestion as-is.
-- How did you evaluate or verify what the AI suggested?
+One AI suggestion that was modified: the initial conflict detection demo tried to create two Tasks with `earliest_start == latest_start` (an identical time), which the AI didn't account for. Our own `Task.__post_init__` validation (which AI helped write) rejected it with a `ValueError`. Rather than removing the validation, we revised the demo to manually construct a `DailySchedule` with two overlapping `ScheduledTask` objects — a more realistic and informative test of `conflicts()`. The AI suggestion was correct in intent but wrong in approach; the fix required understanding both the validation rules and what `conflicts()` is actually protecting against.
 
 ---
 
@@ -128,13 +160,17 @@ A second tradeoff: `conflicts()` is O(n²) — it compares every pair of Schedul
 
 **a. What you tested**
 
-- What behaviors did you test?
-- Why were these tests important?
+26 tests across four layers:
+- **Task** — `mark_complete()`, `reset()`, invalid duration, invalid time window, string enum coercion
+- **Pet** — add/remove tasks, pending/completed filters, `complete_task()` recurrence lifecycle, `reset_daily_tasks()`
+- **Owner** — add pet, get pet by name, `all_tasks()`, `all_pending_tasks()`, `available_minutes`
+- **Scheduler** — priority sort order, medication tiebreaker, duration tiebreaker, recurring next-occurrence dates (daily and weekly), conflict detection (overlap and sequential), scheduler produces conflict-free output, skips tasks that exceed the day window
+
+These tests matter because the scheduler's correctness cannot be verified by looking at the UI — a bug in `_sort_tasks()` would silently produce a wrong order with no visible error.
 
 **b. Confidence**
 
-- How confident are you that your scheduler works correctly?
-- What edge cases would you test next if you had more time?
+★★★★☆ — Core scheduling behaviors are fully covered. Untested edge cases: weekdays recurrence skipping a weekend boundary, tasks with only `earliest_start` (no `latest_start`), an owner whose `available_end` is before `available_start`, and concurrent multi-pet schedules where one pet's task bleeds into another's window.
 
 ---
 
@@ -142,12 +178,12 @@ A second tradeoff: `conflicts()` is O(n²) — it compares every pair of Schedul
 
 **a. What went well**
 
-- What part of this project are you most satisfied with?
+The composition architecture (Owner → pets → tasks) was the strongest design decision. It made `generate_all_schedules(owner)` trivial to implement and meant the Scheduler never needed to know how tasks were stored — it just called `pet.pending_tasks()`. The CLI-first workflow also worked well: running `python main.py` caught the `earliest_start` deferral bug before any UI code was written.
 
 **b. What you would improve**
 
-- If you had another iteration, what would you improve or redesign?
+Two things: first, the `recurrence` field is still a free string (`"daily"`, `"weekly"`, etc.) — a `Recurrence` enum would eliminate typo bugs. Second, the Scheduler advances `current_slot` linearly, which means a task with `earliest_start=14:00` leaves the entire morning-to-14:00 gap empty rather than filling it with lower-priority tasks. A two-pass scheduler (time-windowed tasks placed first, then non-windowed tasks fill gaps) would produce denser, more useful schedules.
 
 **c. Key takeaway**
 
-- What is one important thing you learned about designing systems or working with AI on this project?
+The most important lesson: AI is effective at generating structurally correct code quickly, but it cannot reason about the *consequences* of a design choice the way a domain-aware human can. The deferral-vs-rejection bug, the composition architecture change, and the conflict demo fix all required understanding what the system is *for* — not just what the code does. Being the lead architect means deciding which AI suggestions to accept, which to modify, and which to reject, always in service of the system's actual purpose.
