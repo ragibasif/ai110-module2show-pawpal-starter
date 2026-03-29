@@ -22,6 +22,27 @@ Your final app should:
 - Display the plan clearly (and ideally explain the reasoning)
 - Include tests for the most important scheduling behaviors
 
+## Smarter Scheduling
+
+PawPal+ includes algorithmic logic beyond simple task lists:
+
+- **Priority sorting** — tasks are sorted high → medium → low; within the same priority, `medication` category jumps to the front, then shorter tasks go first as a tiebreaker.
+- **Time-window deferral** — tasks with an `earliest_start` are deferred (not dropped) until the right time window opens.
+- **Conflict detection** — `DailySchedule.conflicts()` flags any overlapping ScheduledTasks, useful as a safety net for schedules assembled outside the Scheduler.
+- **Recurring tasks** — completing a daily/weekday/weekly task via `Pet.complete_task()` automatically queues the next occurrence with a computed `due_date`.
+- **Filtering** — `Pet.filter_tasks(priority=..., category=..., completed=...)` supports any combination of criteria.
+
+## Testing PawPal+
+
+```bash
+python -m pytest          # run full suite
+python -m pytest -v       # verbose output
+```
+
+Test coverage includes: task completion, input validation, priority sorting, medication tiebreaker, recurring next-occurrence dates, conflict detection, scheduler integration (conflict-free output, skipped tasks on tight windows).
+
+Confidence level: ★★★★☆ — core scheduling behaviors are fully covered. Edge cases not yet tested: weekdays recurrence skipping weekends, tasks spanning midnight, an owner with zero available minutes.
+
 ## Getting started
 
 ### Setup

@@ -61,6 +61,7 @@ class Task:
     priority: Priority = Priority.MEDIUM
     category: Category = Category.OTHER
     completed: bool = False
+    due_date: Optional[date] = None       # None means "any day" (not date-bound)
     earliest_start: Optional[time] = None
     latest_start: Optional[time] = None
     recurrence: Optional[str] = None
@@ -90,6 +91,46 @@ class Task:
     def reset(self) -> None:
         """Reset completion status (e.g. at the start of a new day)."""
         self.completed = False
+
+    def next_occurrence(self, from_date: Optional[date] = None) -> Optional[Task]:
+        """
+        Return a new Task for the next scheduled occurrence of this recurring task.
+        Returns None if the task has no recurrence set.
+
+        from_date defaults to today. The new task's due_date is set to:
+          - daily     → from_date + 1 day
+          - weekdays  → from_date + 1 day, skipping Saturday/Sunday
+          - weekly    → from_date + 7 days
+        """
+        if not self.recurrence:
+            return None
+
+        base = from_date or date.today()
+
+        if self.recurrence == "daily":
+            next_date = base + timedelta(days=1)
+        elif self.recurrence == "weekdays":
+            next_date = base + timedelta(days=1)
+            while next_date.weekday() >= 5:   # 5=Saturday, 6=Sunday
+                next_date += timedelta(days=1)
+        elif self.recurrence == "weekly":
+            next_date = base + timedelta(weeks=1)
+        else:
+            next_date = base + timedelta(days=1)  # fallback: treat as daily
+
+        # Return a fresh copy with reset completion and updated due_date
+        return Task(
+            title=self.title,
+            duration_minutes=self.duration_minutes,
+            priority=self.priority,
+            category=self.category,
+            completed=False,
+            due_date=next_date,
+            earliest_start=self.earliest_start,
+            latest_start=self.latest_start,
+            recurrence=self.recurrence,
+            notes=self.notes,
+        )
 
     def __str__(self) -> str:
         status = "✓" if self.completed else "○"
@@ -146,6 +187,38 @@ class Pet:
     def completed_tasks(self) -> list[Task]:
         """Return tasks that have been marked complete."""
         return [t for t in self.tasks if t.completed]
+
+    def complete_task(self, task: Task, today: Optional[date] = None) -> Optional[Task]:
+        """
+        Mark a task complete. If it recurs, queue the next occurrence.
+
+        Returns the newly created next-occurrence Task (already added to
+        this pet's task list), or None for one-off tasks.
+        """
+        task.mark_complete()
+        next_task = task.next_occurrence(from_date=today or date.today())
+        if next_task:
+            self.tasks.append(next_task)
+        return next_task
+
+    def filter_tasks(
+        self,
+        completed: Optional[bool] = None,
+        category: Optional[Category] = None,
+        priority: Optional[Priority] = None,
+    ) -> list[Task]:
+        """
+        Return tasks filtered by optional criteria.
+        Pass None for a criterion to skip that filter.
+        """
+        result = self.tasks
+        if completed is not None:
+            result = [t for t in result if t.completed == completed]
+        if category is not None:
+            result = [t for t in result if t.category == category]
+        if priority is not None:
+            result = [t for t in result if t.priority == priority]
+        return result
 
     def reset_daily_tasks(self) -> None:
         """Reset all recurring tasks at the start of a new day."""
@@ -330,8 +403,17 @@ class Scheduler:
 
         Return a NEW sorted list — do not mutate the input.
         """
-        # YOUR CODE HERE
-        raise NotImplementedError("Implement _sort_tasks() — see the docstring above.")
+        # Map priority to a numeric weight: lower number = scheduled sooner
+        priority_weight = {Priority.HIGH: 0, Priority.MEDIUM: 1, Priority.LOW: 2}
+
+        # Medications jump to the front within their priority tier
+        category_weight = lambda t: 0 if t.category == Category.MEDICATION else 1
+
+        # Tiebreaker: shorter tasks first (fit more tasks into the day)
+        return sorted(
+            tasks,
+            key=lambda t: (priority_weight[t.priority], category_weight(t), t.duration_minutes),
+        )
 
     # -- Public API ----------------------------------------------------------
 

@@ -101,8 +101,12 @@ No validation existed on `Task` construction. A `duration_minutes` of 0 or -5 wo
 
 **b. Tradeoffs**
 
-- Describe one tradeoff your scheduler makes.
-- Why is that tradeoff reasonable for this scenario?
+**Greedy single-pass scheduling vs. optimal packing:**
+The Scheduler uses a greedy algorithm: it sorts tasks once by priority, then assigns them in order to the next available slot. This means the first high-priority task "claims" its time, and everything else fills in around it. It does not backtrack or try alternative orderings to fit more tasks in.
+
+The tradeoff: a greedy scheduler may leave a 25-minute gap that could fit a 20-minute low-priority task, but won't go back and reorder to use it. An optimal scheduler (e.g. using dynamic programming or backtracking) would find the maximum-value packing — but for a daily pet care schedule with <20 tasks, the added complexity is not worth it. Pet owners benefit more from a fast, predictable, explainable schedule than a theoretically optimal one.
+
+A second tradeoff: `conflicts()` is O(n²) — it compares every pair of ScheduledTasks. For a daily schedule this is fine (26ms for 26 tests total), but would not scale to hundreds of tasks without replacing it with a sweep-line algorithm.
 
 ---
 
