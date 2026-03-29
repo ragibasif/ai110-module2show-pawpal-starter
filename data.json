@@ -1,0 +1,129 @@
+{
+  "name": "Jordan",
+  "available_start": "07:00",
+  "available_end": "21:00",
+  "pets": [
+    {
+      "name": "Mochi",
+      "species": "dog",
+      "age": 3,
+      "tasks": [
+        {
+          "title": "Grooming brush",
+          "duration_minutes": 15,
+          "priority": "low",
+          "category": "grooming",
+          "completed": false,
+          "due_date": null,
+          "earliest_start": null,
+          "latest_start": null,
+          "recurrence": null,
+          "notes": ""
+        },
+        {
+          "title": "Breakfast feeding",
+          "duration_minutes": 10,
+          "priority": "high",
+          "category": "feeding",
+          "completed": false,
+          "due_date": null,
+          "earliest_start": null,
+          "latest_start": null,
+          "recurrence": "daily",
+          "notes": ""
+        },
+        {
+          "title": "Heartworm medication",
+          "duration_minutes": 5,
+          "priority": "high",
+          "category": "medication",
+          "completed": false,
+          "due_date": null,
+          "earliest_start": "08:00",
+          "latest_start": "10:00",
+          "recurrence": "daily",
+          "notes": "Give with food"
+        },
+        {
+          "title": "Morning walk",
+          "duration_minutes": 30,
+          "priority": "high",
+          "category": "walk",
+          "completed": true,
+          "due_date": null,
+          "earliest_start": null,
+          "latest_start": null,
+          "recurrence": "daily",
+          "notes": ""
+        },
+        {
+          "title": "Afternoon play",
+          "duration_minutes": 20,
+          "priority": "medium",
+          "category": "enrichment",
+          "completed": false,
+          "due_date": null,
+          "earliest_start": "14:00",
+          "latest_start": null,
+          "recurrence": null,
+          "notes": ""
+        },
+        {
+          "title": "Morning walk",
+          "duration_minutes": 30,
+          "priority": "high",
+          "category": "walk",
+          "completed": false,
+          "due_date": "2026-03-30",
+          "earliest_start": null,
+          "latest_start": null,
+          "recurrence": "daily",
+          "notes": ""
+        }
+      ]
+    },
+    {
+      "name": "Luna",
+      "species": "cat",
+      "age": 5,
+      "tasks": [
+        {
+          "title": "Thyroid medication",
+          "duration_minutes": 5,
+          "priority": "high",
+          "category": "medication",
+          "completed": false,
+          "due_date": null,
+          "earliest_start": "08:00",
+          "latest_start": "09:00",
+          "recurrence": "daily",
+          "notes": ""
+        },
+        {
+          "title": "Breakfast feeding",
+          "duration_minutes": 5,
+          "priority": "high",
+          "category": "feeding",
+          "completed": false,
+          "due_date": null,
+          "earliest_start": null,
+          "latest_start": null,
+          "recurrence": "daily",
+          "notes": ""
+        },
+        {
+          "title": "Interactive toy session",
+          "duration_minutes": 15,
+          "priority": "medium",
+          "category": "enrichment",
+          "completed": false,
+          "due_date": null,
+          "earliest_start": null,
+          "latest_start": null,
+          "recurrence": null,
+          "notes": ""
+        }
+      ]
+    }
+  ]
+}

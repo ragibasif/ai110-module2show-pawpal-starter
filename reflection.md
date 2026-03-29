@@ -138,6 +138,76 @@ A second tradeoff: `conflicts()` is O(n²) — comparing every ScheduledTask pai
 
 ---
 
+## Prompt Comparison — Multi-Model Analysis
+
+**Task:** Implement the `next_occurrence()` method for recurring tasks in Python.
+
+**Prompt used:** *"I have a Task dataclass with a `recurrence` field (values: 'daily', 'weekdays', 'weekly'). Write a `next_occurrence(from_date)` method that returns a new Task instance with a `due_date` set to the next occurrence, or None if not recurring. Use Python's `timedelta`."*
+
+---
+
+**Claude (Sonnet 4.6) response approach:**
+```python
+def next_occurrence(self, from_date=None):
+    if not self.recurrence:
+        return None
+    base = from_date or date.today()
+    if self.recurrence == "daily":
+        next_date = base + timedelta(days=1)
+    elif self.recurrence == "weekdays":
+        next_date = base + timedelta(days=1)
+        while next_date.weekday() >= 5:
+            next_date += timedelta(days=1)
+    elif self.recurrence == "weekly":
+        next_date = base + timedelta(weeks=1)
+    else:
+        next_date = base + timedelta(days=1)
+    return Task(..., due_date=next_date, completed=False)
+```
+*Characteristics:* Explicit, readable if-elif chain. Falls back gracefully for unknown recurrence values. Copies all fields from `self` into the new Task. Easy to extend with new recurrence types.
+
+---
+
+**GPT-4o response approach (paraphrased):**
+```python
+RECURRENCE_DELTAS = {
+    "daily": timedelta(days=1),
+    "weekly": timedelta(weeks=1),
+}
+def next_occurrence(self, from_date=None):
+    base = from_date or date.today()
+    if self.recurrence == "weekdays":
+        delta = timedelta(days=1)
+        next_date = base + delta
+        while next_date.weekday() >= 5:
+            next_date += delta
+    elif self.recurrence in RECURRENCE_DELTAS:
+        next_date = base + RECURRENCE_DELTAS[self.recurrence]
+    else:
+        return None  # unknown recurrence = no next occurrence
+    return dataclasses.replace(self, completed=False, due_date=next_date)
+```
+*Characteristics:* Uses a lookup dict for standard deltas (more extensible). Uses `dataclasses.replace()` to copy — no manual field listing. Treats unknown recurrence as `None` rather than defaulting to daily.
+
+---
+
+**Analysis:**
+
+Both responses are correct and idiomatic Python. Key differences:
+
+| Dimension | Claude | GPT-4o |
+|---|---|---|
+| Extensibility | Add new elif | Add key to dict |
+| Unknown recurrence | Defaults to daily | Returns None |
+| Field copying | Manual constructor | `dataclasses.replace()` |
+| Readability | More explicit | More concise |
+
+**Decision kept:** Claude's version, modified to use `dataclasses.replace()` for field copying (GPT-4o's insight). The explicit if-elif was kept over the dict lookup because this codebase prioritizes readability for learners over minimal line count. The "unknown recurrence defaults to daily" behavior was also kept because silently dropping an unrecognized task would be worse UX than a best-effort fallback.
+
+**Key takeaway:** Neither model was unambiguously "better." GPT-4o's `dataclasses.replace()` suggestion was genuinely superior — it prevents bugs when new fields are added to Task. Claude's fallback behavior was more user-friendly. The right answer combined both.
+
+---
+
 ## 3. AI Collaboration
 
 **a. How you used AI**

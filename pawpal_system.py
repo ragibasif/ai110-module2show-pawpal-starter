@@ -10,10 +10,12 @@ Ownership chain:
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +134,45 @@ class Task:
             notes=self.notes,
         )
 
+    # -- Serialisation -------------------------------------------------------
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialise to a JSON-safe dictionary."""
+        return {
+            "title": self.title,
+            "duration_minutes": self.duration_minutes,
+            "priority": self.priority.value,
+            "category": self.category.value,
+            "completed": self.completed,
+            "due_date": self.due_date.isoformat() if self.due_date else None,
+            "earliest_start": self.earliest_start.strftime("%H:%M") if self.earliest_start else None,
+            "latest_start": self.latest_start.strftime("%H:%M") if self.latest_start else None,
+            "recurrence": self.recurrence,
+            "notes": self.notes,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Task:
+        """Reconstruct a Task from a serialised dictionary."""
+        def _time(s: Optional[str]) -> Optional[time]:
+            if not s:
+                return None
+            h, m = s.split(":")
+            return time(int(h), int(m))
+
+        return cls(
+            title=data["title"],
+            duration_minutes=data["duration_minutes"],
+            priority=data.get("priority", "medium"),
+            category=data.get("category", "other"),
+            completed=data.get("completed", False),
+            due_date=date.fromisoformat(data["due_date"]) if data.get("due_date") else None,
+            earliest_start=_time(data.get("earliest_start")),
+            latest_start=_time(data.get("latest_start")),
+            recurrence=data.get("recurrence"),
+            notes=data.get("notes", ""),
+        )
+
     def __str__(self) -> str:
         status = "✓" if self.completed else "○"
         window = ""
@@ -226,6 +267,29 @@ class Pet:
             if task.recurrence:
                 task.reset()
 
+    # -- Serialisation -------------------------------------------------------
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialise to a JSON-safe dictionary (owner reference excluded)."""
+        return {
+            "name": self.name,
+            "species": self.species,
+            "age": self.age,
+            "tasks": [t.to_dict() for t in self.tasks],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], owner: Owner) -> Pet:
+        """Reconstruct a Pet from a serialised dictionary."""
+        pet = cls(
+            name=data["name"],
+            species=data["species"],
+            age=data["age"],
+            owner=owner,
+        )
+        pet.tasks = [Task.from_dict(t) for t in data.get("tasks", [])]
+        return pet
+
     def __str__(self) -> str:
         return (
             f"Pet({self.name}, {self.species}, age {self.age}, "
@@ -283,6 +347,45 @@ class Owner:
         start_dt = datetime.combine(date.today(), self.available_start)
         end_dt = datetime.combine(date.today(), self.available_end)
         return int((end_dt - start_dt).total_seconds() // 60)
+
+    # -- Serialisation -------------------------------------------------------
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialise the full owner → pets → tasks graph to a dictionary."""
+        return {
+            "name": self.name,
+            "available_start": self.available_start.strftime("%H:%M"),
+            "available_end": self.available_end.strftime("%H:%M"),
+            "pets": [p.to_dict() for p in self.pets],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Owner:
+        """Reconstruct an Owner (and all nested Pets/Tasks) from a dictionary."""
+        def _time(s: str) -> time:
+            h, m = s.split(":")
+            return time(int(h), int(m))
+
+        owner = cls(
+            name=data["name"],
+            available_start=_time(data.get("available_start", "07:00")),
+            available_end=_time(data.get("available_end", "21:00")),
+        )
+        owner.pets = [Pet.from_dict(p, owner) for p in data.get("pets", [])]
+        return owner
+
+    def save_to_json(self, path: str = "data.json") -> None:
+        """Persist the full owner graph to a JSON file."""
+        with open(path, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
+
+    @classmethod
+    def load_from_json(cls, path: str = "data.json") -> Optional[Owner]:
+        """Load an Owner from a JSON file. Returns None if the file doesn't exist."""
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            return cls.from_dict(json.load(f))
 
     def __str__(self) -> str:
         return (
@@ -381,39 +484,73 @@ class Scheduler:
       5. Record skipped tasks with a human-readable reason.
     """
 
+    def _weighted_score(self, task: Task) -> float:
+        """
+        Compute a continuous priority score for a task. Lower = scheduled sooner.
+
+        Factors and weights:
+          - Priority tier:    high=0, medium=100, low=200  (dominant factor)
+          - Category urgency: medication gets -10 bonus within its tier
+          - Window tightness: tasks with an earlier latest_start are more urgent;
+            we add a small fractional penalty proportional to the latest_start
+            time so tighter windows sort before looser ones at equal priority.
+          - Duration:         sub-penny tiebreaker so shorter tasks go first
+            when everything else is equal (packs more tasks into the day).
+        """
+        priority_base = {Priority.HIGH: 0.0, Priority.MEDIUM: 100.0, Priority.LOW: 200.0}
+        score = priority_base[task.priority]
+
+        if task.category == Category.MEDICATION:
+            score -= 10.0
+
+        if task.latest_start:
+            # Normalise to [0, 1): earlier deadline → smaller addend → higher urgency
+            window_minutes = task.latest_start.hour * 60 + task.latest_start.minute
+            score += window_minutes / 1440.0
+
+        score += task.duration_minutes / 10_000.0
+        return score
+
     def _sort_tasks(self, tasks: list[Task]) -> list[Task]:
+        """Return tasks sorted by weighted score (ascending = most urgent first)."""
+        return sorted(tasks, key=self._weighted_score)
+
+    def find_next_available_slot(
+        self,
+        pet: Pet,
+        duration_minutes: int,
+        after_time: Optional[time] = None,
+        plan_date: Optional[date] = None,
+    ) -> Optional[datetime]:
         """
-        Return tasks in the order they should be scheduled.
+        Find the next free slot of at least `duration_minutes` for this pet.
 
-        TODO: Implement your sorting strategy here (~5-8 lines).
+        Generates today's schedule, then scans the gaps between scheduled
+        tasks for a window that fits the requested duration.
 
-        You have access to:
-            task.priority         → Priority.HIGH / .MEDIUM / .LOW
-            task.category         → Category.MEDICATION / .WALK / etc.
-            task.duration_minutes → integer
-            task.earliest_start   → time or None
-            task.latest_start     → time or None
-
-        Decisions to make:
-          1. Map Priority enum values to numeric weights so Python's
-             sorted() can compare them (high=0, medium=1, low=2).
-          2. Choose a tiebreaker for equal-priority tasks.
-             (shorter first? tighter time window first?)
-          3. Should MEDICATION always jump the queue regardless of priority?
-
-        Return a NEW sorted list — do not mutate the input.
+        Returns the start datetime of the first fitting gap, or None if
+        no slot is available within the owner's window.
         """
-        # Map priority to a numeric weight: lower number = scheduled sooner
-        priority_weight = {Priority.HIGH: 0, Priority.MEDIUM: 1, Priority.LOW: 2}
+        plan_date = plan_date or date.today()
+        schedule = self.generate_schedule(pet, plan_date=plan_date)
 
-        # Medications jump to the front within their priority tier
-        category_weight = lambda t: 0 if t.category == Category.MEDICATION else 1
-
-        # Tiebreaker: shorter tasks first (fit more tasks into the day)
-        return sorted(
-            tasks,
-            key=lambda t: (priority_weight[t.priority], category_weight(t), t.duration_minutes),
+        candidate = datetime.combine(
+            plan_date, after_time or pet.owner.available_start
         )
+        day_end = datetime.combine(plan_date, pet.owner.available_end)
+        busy = sorted(schedule.scheduled, key=lambda st: st.start_time)
+
+        for st in busy:
+            if candidate + timedelta(minutes=duration_minutes) <= st.start_time:
+                return candidate          # gap before this task is big enough
+            if st.end_time > candidate:
+                candidate = st.end_time   # skip past the busy block
+
+        # Check the gap after all scheduled tasks
+        if candidate + timedelta(minutes=duration_minutes) <= day_end:
+            return candidate
+
+        return None
 
     # -- Public API ----------------------------------------------------------
 

@@ -5,7 +5,7 @@ Run: python -m pytest
 """
 
 import pytest
-from datetime import date, time
+from datetime import date, datetime, time
 
 from pawpal_system import Category, Owner, Pet, Priority, Scheduler, Task
 
@@ -305,6 +305,121 @@ def test_scheduler_produces_conflict_free_schedule(owner, pet):
 
     schedule = Scheduler().generate_schedule(pet, plan_date=date.today())
     assert schedule.conflicts() == []
+
+
+# ---------------------------------------------------------------------------
+# Weighted scoring tests
+# ---------------------------------------------------------------------------
+
+def test_weighted_score_medication_beats_walk_same_priority(owner, pet):
+    """Medication should have a lower weighted score than a walk at same priority."""
+    meds = Task(title="Meds", duration_minutes=5,
+                priority=Priority.HIGH, category=Category.MEDICATION)
+    walk = Task(title="Walk", duration_minutes=5,
+                priority=Priority.HIGH, category=Category.WALK)
+    s = Scheduler()
+    assert s._weighted_score(meds) < s._weighted_score(walk)
+
+
+def test_weighted_score_tighter_window_sorts_first(owner, pet):
+    """A task with an earlier latest_start should score lower (more urgent)."""
+    tight = Task(title="Tight", duration_minutes=10, priority=Priority.HIGH,
+                 earliest_start=time(8, 0), latest_start=time(9, 0))
+    loose = Task(title="Loose", duration_minutes=10, priority=Priority.HIGH,
+                 earliest_start=time(8, 0), latest_start=time(18, 0))
+    s = Scheduler()
+    assert s._weighted_score(tight) < s._weighted_score(loose)
+
+
+def test_weighted_score_high_always_beats_medium(owner, pet):
+    """Any high-priority task should score lower than any medium-priority task."""
+    high = Task(title="H", duration_minutes=240, priority=Priority.HIGH)
+    med  = Task(title="M", duration_minutes=1,   priority=Priority.MEDIUM)
+    s = Scheduler()
+    assert s._weighted_score(high) < s._weighted_score(med)
+
+
+# ---------------------------------------------------------------------------
+# find_next_available_slot tests
+# ---------------------------------------------------------------------------
+
+def test_find_slot_returns_start_of_day_when_no_tasks(owner, pet):
+    """With no tasks, the first available slot should be the owner's available_start."""
+    slot = Scheduler().find_next_available_slot(pet, duration_minutes=30, plan_date=date.today())
+    assert slot is not None
+    assert slot.time() == owner.available_start
+
+
+def test_find_slot_after_scheduled_tasks(owner, pet):
+    """Slot finder should return a gap after existing tasks."""
+    pet.add_task(Task(title="Walk", duration_minutes=60, priority=Priority.HIGH))
+    slot = Scheduler().find_next_available_slot(pet, duration_minutes=10, plan_date=date.today())
+    assert slot is not None
+    # Should be at 08:00 (after 07:00–08:00 walk)
+    assert slot >= datetime.combine(date.today(), time(7, 0))
+
+
+def test_find_slot_returns_none_when_day_full(owner):
+    """Should return None when no gap of the required size exists."""
+    # 14-hour window, fill it with a 14-hour task so nothing fits
+    full_owner = Owner(name="Busy", available_start=time(7, 0), available_end=time(21, 0))
+    full_pet = Pet(name="P", species="dog", age=1, owner=full_owner)
+    full_pet.add_task(Task(title="All day", duration_minutes=840, priority=Priority.HIGH))
+    slot = Scheduler().find_next_available_slot(full_pet, duration_minutes=30, plan_date=date.today())
+    assert slot is None
+
+
+# ---------------------------------------------------------------------------
+# JSON persistence tests
+# ---------------------------------------------------------------------------
+
+def test_owner_save_and_load_roundtrip(tmp_path, owner, pet, simple_task):
+    """save_to_json + load_from_json should reconstruct the full object graph."""
+    pet.add_task(simple_task)
+    owner.add_pet(pet)
+    path = str(tmp_path / "test_data.json")
+    owner.save_to_json(path)
+
+    loaded = Owner.load_from_json(path)
+    assert loaded is not None
+    assert loaded.name == owner.name
+    assert loaded.available_start == owner.available_start
+    assert len(loaded.pets) == 1
+    assert loaded.pets[0].name == pet.name
+    assert len(loaded.pets[0].tasks) == 1
+    assert loaded.pets[0].tasks[0].title == simple_task.title
+
+
+def test_load_returns_none_for_missing_file():
+    """load_from_json should return None if the file doesn't exist."""
+    result = Owner.load_from_json("/nonexistent/path/data.json")
+    assert result is None
+
+
+def test_task_serialisation_roundtrip():
+    """Task.to_dict() → Task.from_dict() should preserve all fields."""
+    original = Task(
+        title="Meds",
+        duration_minutes=5,
+        priority=Priority.HIGH,
+        category=Category.MEDICATION,
+        completed=True,
+        due_date=date(2026, 4, 1),
+        earliest_start=time(8, 0),
+        latest_start=time(10, 0),
+        recurrence="daily",
+        notes="With food",
+    )
+    restored = Task.from_dict(original.to_dict())
+    assert restored.title == original.title
+    assert restored.priority == original.priority
+    assert restored.category == original.category
+    assert restored.completed == original.completed
+    assert restored.due_date == original.due_date
+    assert restored.earliest_start == original.earliest_start
+    assert restored.latest_start == original.latest_start
+    assert restored.recurrence == original.recurrence
+    assert restored.notes == original.notes
 
 
 def test_scheduler_skips_tasks_that_exceed_day(owner):
