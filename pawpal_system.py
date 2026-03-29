@@ -104,6 +104,16 @@ class Task:
             self.priority = Priority(self.priority.lower())
         if isinstance(self.category, str):
             self.category = Category(self.category.lower())
+        # Validate duration
+        if self.duration_minutes <= 0:
+            raise ValueError(f"duration_minutes must be positive, got {self.duration_minutes}")
+        # Validate time window consistency
+        if self.earliest_start and self.latest_start:
+            if self.earliest_start >= self.latest_start:
+                raise ValueError(
+                    f"earliest_start ({self.earliest_start}) must be before "
+                    f"latest_start ({self.latest_start})"
+                )
 
     def __str__(self) -> str:
         window = ""
@@ -278,7 +288,20 @@ class Scheduler:
                 )
                 continue
 
-            # Does it respect the task's own time window?
+            # If we're too early for this task's window, defer (advance the slot)
+            if task.earliest_start:
+                earliest_dt = datetime.combine(plan_date, task.earliest_start)
+                if current_slot < earliest_dt:
+                    current_slot = earliest_dt
+                    task_end = current_slot + timedelta(minutes=task.duration_minutes)
+                    # Re-check whether it still fits in the day after deferring
+                    if task_end > day_end:
+                        schedule.skipped.append(
+                            (task, f"earliest start {task.earliest_start.strftime('%H:%M')} leaves no time to complete it")
+                        )
+                        continue
+
+            # Does it respect the task's latest_start hard deadline?
             fits, reason = self._fits_in_window(task, current_slot, plan_date)
             if not fits:
                 schedule.skipped.append((task, reason))

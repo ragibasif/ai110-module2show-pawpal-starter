@@ -82,8 +82,13 @@ classDiagram
 
 **b. Design changes**
 
-- Did your design change during implementation?
-- If yes, describe at least one change and why you made it.
+Two bugs were identified during design review and fixed before implementation:
+
+**Change 1 — Task deferral instead of rejection for `earliest_start`**
+The original `generate_schedule()` called `_fits_in_window()` and permanently skipped any task whose `earliest_start` hadn't arrived yet. This was wrong: a task with `earliest_start=18:00` scheduled at 09:00 should be *deferred* to 18:00, not thrown away. The fix advances `current_slot` to the task's `earliest_start` when the scheduler arrives too early, then re-checks whether the task still fits before the end of the day. The `_fits_in_window()` check is now reserved only for the `latest_start` hard deadline.
+
+**Change 2 — Input validation added to `Task.__post_init__`**
+No validation existed on `Task` construction. A `duration_minutes` of 0 or -5 would silently produce broken schedules, and an `earliest_start` after `latest_start` would create an impossible time window. Both are now caught with `ValueError` in `__post_init__`, which runs automatically after the dataclass `__init__` is generated. A third issue — `recurrence` being a free unvalidated string — was noted but left as a known limitation for now.
 
 ---
 
